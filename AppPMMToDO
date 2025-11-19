@@ -1,0 +1,591 @@
+package com.example.to_do
+
+// Importaciones de todas las librerías que necesitamos
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.navigation.NavController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.example.to_do.ui.theme.ToDoTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+
+// Clase principal de la aplicación que extiende de ComponentActivity
+class MainActivity : ComponentActivity() {
+
+    // Esta anotación suprime warnings de lint sobre crear corrutinas durante la composición
+    @SuppressLint("CoroutineCreationDuringComposition")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Pedir permiso para mostrar notificaciones si no lo tenemos
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        }
+
+        // Crear el canal de notificaciones
+        crearCanalNotificaciones()
+
+        // Aquí empieza la parte de Compose (la UI)
+        setContent {
+            // Guardamos el contexto actual y creamos el DataStoreManager
+            val contexto = this
+            val ds = remember { DataStoreManager(contexto) }
+            val scope = rememberCoroutineScope()
+
+            // Estado para controlar si el modo oscuro está activado
+            var modoOscuro by remember { mutableStateOf(false) }
+
+            // Efecto que se ejecuta una vez al iniciar para cargar la preferencia del modo oscuro
+            LaunchedEffect(Unit) {
+                ds.leerModoOscuro.collectLatest { modo ->
+                    modoOscuro = modo
+                }
+            }
+
+            // Aplicamos nuestro tema personalizado con el modo oscuro
+            ToDoTheme(modoOscuro = modoOscuro) {
+                // Surface es un contenedor que da el color de fondo correcto según el tema
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    // Llamamos a nuestra aplicación principal
+                    AplicacionTodo(
+                        modoOscuro = modoOscuro,
+                        cambiarModo = { nuevo ->
+                            scope.launch { ds.guardarModoOscuro(nuevo) }
+                        },
+                        ds = ds
+                    )
+                }
+            }
+        }
+    }
+
+    // Función para crear el canal de notificaciones (necesario desde Android 8.0)
+    private fun crearCanalNotificaciones() {
+        val canal = NotificationChannel(
+            "canal_inactividad",  // ID único del canal
+            "Recordatorios",       // Nombre visible para el usuario
+            NotificationManager.IMPORTANCE_HIGH  // Prioridad alta
+        )
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(canal)
+    }
+}
+
+// Función composable principal que maneja la navegación entre pantallas
+@Composable
+fun AplicacionTodo(
+    modoOscuro: Boolean,           // Estado del modo oscuro
+    cambiarModo: (Boolean) -> Unit, // Función para cambiar el modo oscuro
+    ds: DataStoreManager           // Manager para guardar preferencias
+) {
+    // Controlador de navegación que recuerda su estado
+    val nav = rememberNavController()
+
+    // Sistema de navegación con dos destinos: login y tareas
+    NavHost(navController = nav, startDestination = "login") {
+        // Pantalla de login - primera pantalla que ve el usuario
+        composable("login") {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                PantallaLogin(nav)
+            }
+        }
+        // Pantalla de tareas - recibe parámetros nombre y alias
+        composable("tareas/{nombre}/{alias}") {
+            // Extraemos los parámetros de la ruta
+            val nombre = it.arguments?.getString("nombre") ?: ""
+            val alias = it.arguments?.getString("alias") ?: ""
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                PantallaTareas(nombre, alias, modoOscuro, cambiarModo, ds)
+            }
+        }
+    }
+}
+
+// Pantalla de login donde el usuario introduce su nombre y alias
+@OptIn(ExperimentalMaterial3Api::class)  // Usamos APIs experimentales de Material3
+@Composable
+fun PantallaLogin(nav: NavController) {
+    // Estados para guardar lo que el usuario escribe en los campos de texto
+    var nombre by remember { mutableStateOf("") }
+    var alias by remember { mutableStateOf("") }
+
+    // Diseño en columna para organizar los elementos verticalmente
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,  // Centramos horizontalmente
+        verticalArrangement = Arrangement.Top  // Los elementos se alinean arriba
+    ) {
+        // Espacio en blanco en la parte superior
+        Spacer(Modifier.height(60.dp))
+
+        // Imagen del logo de la aplicación
+        Image(
+            painter = painterResource(id = R.drawable.todo),
+            contentDescription = "Logo ToDo",  // Texto para accesibilidad
+            modifier = Modifier.size(140.dp)
+        )
+
+        // Espacio entre la imagen y los campos de texto
+        Spacer(Modifier.height(32.dp))
+
+        // Campo de texto para el nombre
+        OutlinedTextField(
+            value = nombre,
+            onValueChange = { nombre = it },  // Actualizamos el estado cuando el usuario escribe
+            label = { Text("Nombre") },       // Texto que aparece como etiqueta
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,      // Color cuando está seleccionado
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline,    // Color cuando no está seleccionado
+                focusedLabelColor = MaterialTheme.colorScheme.primary,       // Color de la etiqueta cuando está seleccionado
+                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant, // Color de la etiqueta cuando no está seleccionado
+            )
+        )
+
+        // Espacio entre campos
+        Spacer(Modifier.height(16.dp))
+
+        // Campo de texto para el alias
+        OutlinedTextField(
+            value = alias,
+            onValueChange = { alias = it },
+            label = { Text("Alias") },
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                focusedLabelColor = MaterialTheme.colorScheme.primary,
+                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        )
+
+        // Espacio antes del botón
+        Spacer(Modifier.height(24.dp))
+
+        // Botón para continuar a la pantalla de tareas
+        Button(
+            onClick = {
+                // Navegamos a la pantalla de tareas pasando nombre y alias como parámetros
+                if (nombre.isNotEmpty() && alias.isNotEmpty())
+                    nav.navigate("tareas/$nombre/$alias")
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = nombre.isNotEmpty() && alias.isNotEmpty()  // Solo activo si hay texto
+        ) {
+            Text("Continuar")
+        }
+
+        // Espacio flexible que empuja todo el contenido hacia arriba
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+// Pantalla principal de la aplicación donde se gestionan las tareas
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PantallaTareas(
+    nombre: String,                // Nombre del usuario
+    alias: String,                 // Alias del usuario
+    modoOscuro: Boolean,           // Estado del modo oscuro
+    cambiarModo: (Boolean) -> Unit, // Función para cambiar modo oscuro
+    ds: DataStoreManager           // Manager de preferencias
+) {
+    // Obtenemos el contexto de la aplicación
+    val contexto = LocalContext.current
+    // Scope para lanzar corrutinas
+    val scope = rememberCoroutineScope()
+
+    // ESTADOS DE LA PANTALLA:
+
+    // Estado para la nueva tarea que se va a añadir
+    var nuevaTarea by remember { mutableStateOf("") }
+    // Estado para la lista de tareas (inicialmente vacía)
+    var listaTareas by remember { mutableStateOf(listOf<String>()) }
+    // Estado para controlar qué tarea se quiere eliminar (null si no hay ninguna)
+    var tareaAEliminar by remember { mutableStateOf<String?>(null) }
+    // Estado para controlar si el menú de opciones está abierto
+    var menuAbierto by remember { mutableStateOf(false) }
+    // Estado para el texto de búsqueda
+    var textoBusqueda by remember { mutableStateOf("") }
+
+    // Estado para el color del texto de las tareas (lo leemos del DataStore)
+    val colorGuardado by ds.leerColorTexto.collectAsState(initial = MaterialTheme.colorScheme.onBackground.toArgb())
+    var colorTexto by remember { mutableStateOf(Color(colorGuardado)) }
+
+    // Filtramos las tareas según el texto de búsqueda (ignorando mayúsculas/minúsculas)
+    val tareasFiltradas = listaTareas.filter { it.contains(textoBusqueda, true) }
+
+    // Estado para controlar cuándo se añadió la última tarea (para notificaciones de inactividad)
+    var tiempoUltimaTarea by remember { mutableStateOf(System.currentTimeMillis()) }
+
+    // Efecto que se ejecuta cuando cambia la lista de tareas
+    LaunchedEffect(listaTareas) {
+        tiempoUltimaTarea = System.currentTimeMillis()
+    }
+
+    // Efecto que se ejecuta una vez al iniciar y cada 10 segundos comprueba inactividad
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(10000)  // Espera 10 segundos
+            // Si han pasado más de 3 minutos (180000 ms) desde la última tarea
+            if (System.currentTimeMillis() - tiempoUltimaTarea > 180000) {
+                // Creamos una notificación de recordatorio
+                val noti = NotificationCompat.Builder(contexto, "canal_inactividad")
+                    .setContentTitle("Recordatorio")
+                    .setContentText("Hace rato que no añades ninguna tarea")
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setAutoCancel(true)
+                    .build()
+                // Nota: La notificación está comentada para no molestar durante el desarrollo
+                // NotificationManagerCompat.from(contexto).notify(1, noti)
+            }
+        }
+    }
+
+    // SENSOR DE MOVIMIENTO:
+
+    // Obtenemos el servicio del sensor
+    val sensorManager = contexto.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    // Obtenemos el sensor del giroscopio
+    val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+
+    // Efecto que se ejecuta una vez y registra el listener del sensor
+    DisposableEffect(Unit) {
+        val listener = object : SensorEventListener {
+            // Cuando el sensor detecta movimiento
+            override fun onSensorChanged(event: SensorEvent) {
+                // Si el movimiento en el eje X es mayor a 4 (agitación fuerte)
+                if (abs(event.values[0]) > 4f) {
+                    // Y hay tareas en la lista
+                    if (listaTareas.isNotEmpty()) {
+                        // Eliminamos la última tarea añadida
+                        listaTareas = listaTareas.dropLast(1)
+                    }
+                }
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        // Registramos el listener para que escuche los cambios del sensor
+        sensorManager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+
+        // Cuando este efecto se desmonte, eliminamos el listener para ahorrar batería
+        onDispose { sensorManager.unregisterListener(listener) }
+    }
+
+    // DISEÑO DE LA PANTALLA DE TAREAS:
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // HEADER - Fila con saludo y menú de opciones
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween  // Espacio entre los elementos
+        ) {
+            // Texto de bienvenida con nombre y alias
+            Text(
+                text = "Hola, $nombre ($alias)",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            // Contenedor para el menú de opciones
+            Box {
+                // Botón con icono de tres puntos para abrir el menú
+                IconButton(onClick = { menuAbierto = true }) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Opciones",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Menú desplegable que aparece al pulsar el botón
+                DropdownMenu(
+                    expanded = menuAbierto,
+                    onDismissRequest = { menuAbierto = false }  // Se cierra al tocar fuera
+                ) {
+                    // Opción para cambiar el color del texto a rojo
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Rojo",
+                                color = Color.Red
+                            )
+                        },
+                        onClick = {
+                            colorTexto = Color.Red
+                            // Guardamos la preferencia en DataStore
+                            scope.launch { ds.guardarColorTexto(Color.Red.toArgb()) }
+                            menuAbierto = false  // Cerramos el menú
+                        }
+                    )
+                    // Opción para cambiar el color del texto a verde
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Verde",
+                                color = Color.Green
+                            )
+                        },
+                        onClick = {
+                            colorTexto = Color.Green
+                            scope.launch { ds.guardarColorTexto(Color.Green.toArgb()) }
+                            menuAbierto = false
+                        }
+                    )
+                    // Opción para cambiar el color del texto a azul
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Azul",
+                                color = Color.Blue
+                            )
+                        },
+                        onClick = {
+                            colorTexto = Color.Blue
+                            scope.launch { ds.guardarColorTexto(Color.Blue.toArgb()) }
+                            menuAbierto = false
+                        }
+                    )
+
+                    // Opción para cambiar entre modo oscuro y claro
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (modoOscuro) "Modo claro" else "Modo oscuro"
+                            )
+                        },
+                        onClick = {
+                            // Cambiamos al modo contrario
+                            cambiarModo(!modoOscuro)
+                            menuAbierto = false
+                        }
+                    )
+                }
+            }
+        }
+
+        // Espacio después del header
+        Spacer(Modifier.height(24.dp))
+
+        // CAMPO DE BÚSQUEDA
+        OutlinedTextField(
+            value = textoBusqueda,
+            onValueChange = { textoBusqueda = it },
+            label = { Text("Buscar tareas") },
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                focusedLabelColor = MaterialTheme.colorScheme.primary,
+                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                cursorColor = MaterialTheme.colorScheme.primary,  // Color del cursor parpadeante
+            )
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        // SECCIÓN PARA AÑADIR NUEVAS TAREAS
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            // Campo de texto para escribir nueva tarea
+            OutlinedTextField(
+                value = nuevaTarea,
+                onValueChange = { nuevaTarea = it },
+                label = { Text("Nueva tarea") },
+                modifier = Modifier.weight(1f),  // Ocupa todo el espacio disponible
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                    focusedLabelColor = MaterialTheme.colorScheme.primary,
+                    unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                )
+            )
+            // Espacio entre el campo y el botón
+            Spacer(Modifier.width(8.dp))
+            // Botón para añadir la tarea
+            Button(
+                onClick = {
+                    // Si hay texto en el campo
+                    if (nuevaTarea.isNotEmpty()) {
+                        // Añadimos la nueva tarea a la lista
+                        listaTareas = listaTareas + nuevaTarea
+                        // Limpiamos el campo de texto
+                        nuevaTarea = ""
+                    }
+                },
+                enabled = nuevaTarea.isNotEmpty()  // Solo activo si hay texto
+            ) {
+                Text("Añadir")
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // LISTA DE TAREAS
+        if (tareasFiltradas.isEmpty()) {
+            // Si no hay tareas, mostramos un mensaje
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f),  // Ocupa todo el espacio disponible
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (textoBusqueda.isEmpty()) "No hay tareas" else "No se encontraron tareas",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        } else {
+            // Si hay tareas, las mostramos en una lista desplazable
+            LazyColumn(
+                modifier = Modifier.weight(1f)  // Ocupa todo el espacio disponible
+            ) {
+                // Para cada tarea en la lista filtrada
+                items(tareasFiltradas) { tarea ->
+                    // Cada tarea es una tarjeta
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),  // Espacio entre tarjetas
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant  // Color de fondo
+                        )
+                    ) {
+                        // Fila con el texto de la tarea y botón de eliminar
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Texto de la tarea con el color seleccionado
+                            Text(
+                                text = tarea,
+                                color = colorTexto,
+                                modifier = Modifier.weight(1f),  // Ocupa todo el espacio disponible
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            // Botón para eliminar la tarea
+                            IconButton(
+                                onClick = { tareaAEliminar = tarea },  // Marcamos esta tarea para eliminar
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Eliminar tarea",
+                                    tint = MaterialTheme.colorScheme.error  // Color rojo de error
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // DIÁLOGO DE CONFIRMACIÓN PARA ELIMINAR TAREAS
+
+    // Si hay una tarea seleccionada para eliminar, mostramos el diálogo
+    if (tareaAEliminar != null) {
+        AlertDialog(
+            onDismissRequest = { tareaAEliminar = null },  // Se cierra al tocar fuera o pulsar atrás
+            title = {
+                Text(
+                    "Confirmar eliminación",
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Text(
+                    "¿Seguro que quieres borrar la tarea: \"$tareaAEliminar\"?",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                // Botón para confirmar la eliminación
+                TextButton(
+                    onClick = {
+                        // Filtramos la lista quitando la tarea a eliminar
+                        listaTareas = listaTareas.filterNot { it == tareaAEliminar }
+                        // Cerramos el diálogo
+                        tareaAEliminar = null
+                    }
+                ) {
+                    Text(
+                        "Eliminar",
+                        color = MaterialTheme.colorScheme.error  // Color rojo para acción peligrosa
+                    )
+                }
+            },
+            dismissButton = {
+                // Botón para cancelar
+                TextButton(
+                    onClick = { tareaAEliminar = null }
+                ) {
+                    Text("Cancelar")
+                }
+            },
+            // Colores del diálogo según el tema
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
